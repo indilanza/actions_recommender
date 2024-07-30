@@ -25,7 +25,7 @@
 defined('MOODLE_INTERNAL') || die();
 
 $plugin->component = 'block_actions_recommender';
-$plugin->release = '0.1.0';
-$plugin->version = 2024021405;
+$plugin->release = '1.0';
+$plugin->version = 2024021408;
 $plugin->requires = 2022112800;
 $plugin->maturity = MATURITY_ALPHA;

@@ -26,3 +26,5 @@
 defined('MOODLE_INTERNAL') || die();
 
 $string['pluginname'] = 'Actions Recommender';
+$string['serverurl'] = 'AI Server URL';
+$string['serverurl_description'] = 'The URL of the IA server used to retrieve recommendations.';
