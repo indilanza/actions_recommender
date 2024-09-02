@@ -116,6 +116,307 @@ class block_actions_recommender extends block_base {
 
 
 
+    public function queryDBAndSendLogs($current_userid, $roleid = null) {
+
+        global $DB;
+        global $CFG;
+        global $COURSE;
+
+        // Define las columnas que quieres en el archivo CSV
+        $columns = array('timecreated', 'userid', 'relateduserid', 'contextid', 'contextinstanceid', 'contextlevel', 'component', 'eventname', 'other', 'origin');
+
+        // ID del curso con el que se interactuó (en este caso, curso con ID 2)
+        //$courseid = 2;
+
+        // Obtener el "Course ID number" del curso actual. "Course ID number" es el identificador que se asigna de forma manual para que moodle pueda interactuar con sistemas externos.
+        $course_id_number = $COURSE->idnumber; #El id=1 es el identificador que he asignado al curso de programación virtual. Lo usaré para poder consultar los logs de los usuarios dentro del grupo "Expderimental Group" para entrenar el recomendador
+
+        //Obtener el id (dinamico que asigna moodle cuando se crea el curso) del curso actual
+        $courseid=$COURSE->id;
+
+        $csv_file = $CFG->dataroot . '/logs_courseid_'.$courseid.'.csv';
+
+
+        if ($course_id_number==1){//Curso programación virtual
+            
+            // Obtener los grupos del usuario en el curso
+            $groups = groups_get_all_groups($courseid, $current_userid);
+
+            if ($groups) {
+                foreach ($groups as $group) {
+                    // Obtener el Group ID number (idnumber) del grupo
+                    $groupidnumber = $group->idnumber;
+
+                    if ($groupidnumber=='002'){
+                        //Consulta para los logs unicamente de los usuarios del grupo de control experimental del curso 
+                        // Construcción de la consulta SQL
+                        $sql = "SELECT l." . implode(', l.', $columns) . " 
+                        FROM {logstore_standard_log} l
+                        JOIN {role_assignments} ra ON ra.userid = l.userid
+                        JOIN {context} ctx ON ctx.id = ra.contextid
+                        JOIN {course_modules} cm ON cm.id = l.contextinstanceid
+                        JOIN {groups_members} gm ON gm.userid = l.userid
+                        JOIN {groups} g ON g.id = gm.groupid
+                        WHERE cm.course = :courseid 
+                        AND l.contextlevel = 70
+                        AND cm.deletioninprogress = 0
+                        AND g.idnumber = :groupidnumber
+                        AND cm.visible = 1"; // Solo incluir módulos visibles para el usuario
+
+                        // Parámetros de la consulta
+                        $params = array('courseid' => $courseid, 'groupidnumber' => '002');
+
+
+                    }
+                    else {
+                        return false; //No pertenece al grupo experimental, por tanto no se entrena ni se ofrecen recomendaciones
+                    }
+                    
+                    
+                    
+                }
+            } 
+
+        } else {
+            
+            // Construcción de la consulta SQL
+            $sql = "SELECT l." . implode(', l.', $columns) . " 
+            FROM {logstore_standard_log} l
+            JOIN {role_assignments} ra ON ra.userid = l.userid
+            JOIN {context} ctx ON ctx.id = ra.contextid
+            JOIN {course_modules} cm ON cm.id = l.contextinstanceid
+            WHERE cm.course = :courseid 
+            AND l.contextlevel=70
+            AND cm.deletioninprogress = 0
+            AND cm.visible = 1"; // Solo incluir módulos visibles para el usuario
+
+            // Parámetros de la consulta
+            $params = array('courseid' => $courseid);
+
+        }
+
+         
+        
+
+        // Agregar la condición para filtrar por rol si se especifica
+        if ($roleid !== null) {
+            $sql .= " AND ra.roleid = :roleid";
+            $params['roleid'] = $roleid;
+        }
+
+        // Ordenar por tiempo creado
+        $sql .= " ORDER BY l.timecreated DESC";
+
+        try {
+            // Obtiene los registros del sistema
+            $logs = $DB->get_records_sql($sql, $params);
+        } catch (dml_exception $e) {
+            // Manejo del error de la base de datos
+            debugging("Error al ejecutar la consulta SQL: " . $e->getMessage());
+            return false;
+        }
+
+
+
+        // Ordenar por tiempo creado
+        $sql2 = $sql . " LIMIT 10";
+
+        
+                
+
+        try {
+            // Obtiene los registros del sistema
+            $logs_2_write = $DB->get_records_sql($sql2, $params);
+            // Depuración: Imprimir los registros recuperados
+            /*echo '<div style="position:relative; z-index:1000; background-color:#fff; border:1px solid #000;">';
+            echo '<pre>';
+            print_r($logs_2_write);
+            echo '</pre>';
+            echo '</div>';*/
+        } catch (dml_exception $e) {
+            // Manejo del error de la base de datos
+            debugging("Error al ejecutar la consulta SQL: " . $e->getMessage());
+
+             
+
+            return false;
+        }
+
+        // Verifica si se obtuvieron logs
+        if (!$logs) {
+            
+            return false; // No se encontraron logs
+        }
+        
+
+        // Verifica si se obtuvieron logs
+        if (!$logs_2_write) { 
+
+           // Depuración
+            //echo '<div style="position:relative; z-index:1000; background-color:#fff; border:1px solid #000;">';
+            //echo '<pre>';
+            //print_r($sql2);
+            //echo '</pre>';
+            //echo '</div>';
+            
+            return false; // No se encontraron logs
+        }
+        
+       
+
+       // Leer el archivo CSV existente
+        $existing_logs = [];
+        if (file_exists($csv_file)) {
+            if (($fp = fopen($csv_file, 'r')) !== false) {
+                // Saltar la primera línea si contiene encabezados
+                $first_line = fgetcsv($fp);
+                while (($data = fgetcsv($fp)) !== false) {
+                    $existing_logs[] = $data;
+                }
+                fclose($fp);
+            }
+        }
+
+        // Preparar los registros para escribir, evitando duplicados
+        $logs_to_write = [];
+        foreach ($logs_2_write as $log) {
+            $log_data = array(
+                $log->timecreated,
+                $log->userid,
+                $log->relateduserid,
+                $log->contextid,
+                $log->contextinstanceid,
+                $log->contextlevel,
+                $log->component,
+                $log->eventname,
+                $log->other,
+                $log->origin
+            );
+
+            // Comprobación detallada para evitar duplicados
+            $is_duplicate = false;
+            foreach ($existing_logs as $existing_log) {
+                if (count($existing_log) != count($log_data)) {
+                    continue; // Saltar si el número de columnas no coincide
+                }
+
+                $match = true;
+                for ($i = 0; $i < count($log_data); $i++) {
+                    if (trim($log_data[$i]) !== trim($existing_log[$i])) {
+                        $match = false;
+                        break;
+                    }
+                }
+
+                if ($match) {
+                    $is_duplicate = true;
+                    break;
+                }
+            }
+
+            // Añadir solo registros nuevos
+            if (!$is_duplicate) {
+                $logs_to_write[] = $log_data;
+            }
+        }
+
+        // Si no hay nuevos registros, no hacer nada
+        if (empty($logs_to_write)) {
+            return false;
+        } else {
+            // Añade al arreglo $logs_to_write los valores obtenidos en logs_2_write
+            $logs_to_write = array_merge($logs_to_write, $existing_logs);
+
+            // Deja en $logs_to_write solo los primeros 10, que corresponden a los logs más recientes
+            $logs_to_write = array_slice($logs_to_write, 0, 10);
+        }
+
+        // Escribir en el archivo CSV (sobrescribiendo)
+        $fp = fopen($csv_file, 'w');
+        if (!$fp) {
+            return false;
+        }
+
+        // Escribir cabeceras solo si el archivo estaba vacío
+        if (filesize($csv_file) == 0) {
+            fputcsv($fp, $columns);
+        }
+
+        // Escribir los registros
+        foreach ($logs_to_write as $log_data) {
+            if (!fputcsv($fp, $log_data)) {
+                fclose($fp);
+                return false;
+            }
+        }
+
+        // Cerrar el archivo CSV
+        fclose($fp);
+
+
+        // Enviar los logs al servicio web FastAPI
+        //$logs_json = json_encode($logs_to_send);
+
+        // Ahora, después de guardar los ultimos 10 registros en el archivo CSV, envía todos los logs historicos al servicio web FastAPI
+        $logs_data = array();
+        foreach ($logs as $log) {
+            $logs_data[] = array(
+                'timecreated' => $log->timecreated,
+                'userid' => $log->userid,                
+                'contextid' => $log->contextid,
+                'contextinstanceid' => $log->contextinstanceid,
+                'contextlevel' => $log->contextlevel,
+                'component' => $log->component,
+                'eventname' => $log->eventname,
+                'other' => $log->other
+                
+            );
+        }
+
+
+        $logs_json = json_encode($logs_data);
+
+
+        $url = get_config('block_actions_recommender', 'serverurl') . '/logs/';
+
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_POST, 1);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $logs_json);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, array(
+            'Content-Type: application/json',
+            'Content-Length: ' . strlen($logs_json) // Asegura que el Content-Length esté definido
+        ));
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+
+        $response = curl_exec($ch);
+
+        // Check for cURL errors
+        if ($response === false) {
+            $error = curl_error($ch);
+            curl_close($ch);
+            error_log("cURL Error: " . $error);
+            return false;
+        }
+
+        $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($http_code == 200) {
+            error_log("Logs sent to FastAPI successfully.");
+            return true;
+        } else {
+            error_log("Error sending logs to FastAPI. HTTP Code: " . $http_code . " Response: " . $response);
+            return false;
+        }
+
+        return true; // Éxito al guardar los logs
+    }
+
+    
+
+
+
+
         /**
      * Ejecuta una consulta para obtener registros del sistema y guarda los resultados en un archivo CSV.
      *
@@ -342,45 +643,101 @@ class block_actions_recommender extends block_base {
         global $USER;
         global $PAGE;//lo agregue nuevo
         global $CFG, $OUTPUT;
+        global $COURSE;
 
         $this->content = new stdClass();
         $this->content->items = array(); // No items by default.
         $this->content->icons = array(); // No icons by default.
         //$this->content->footer = 'Este es el contenido del pie de pagina'; // Empty footer by default.
 
-        $user_id = $USER->id; // Obtener el ID del usuario autenticado
+        $user_id = $USER->id; // Obtener el ID del usuario autenticado        
 
         $text = '';
+
+
+        $course_id_number = $COURSE->idnumber;
+        
+
+
+        if ($course_id_number=='1'){ //Si el curso es el de programación virtual hago las sigueintes comprobaciones 
+             // Obtén el ID del grupo objetivo
+
+            
+        
+            $target_groupid = '001'; //'001' es el id del control group en el curso de programacion virtual.  ID (definido de forma manual para interaccion con sistemas externos) del grupo que quieres restringir
+
+                // Consulta para verificar si el usuario pertenece a ese grupo en el curso actual
+            $sql = "SELECT gm.*
+                        FROM {groups_members} gm
+                        JOIN {groups} g ON g.id = gm.groupid
+                        WHERE gm.userid = :userid
+                        AND g.courseid = :courseid
+                        AND g.idnumber = :groupid";
+
+            $params = array(
+                    'userid' => $USER->id,
+                    'courseid' => $COURSE->id,
+                    'groupid' => $target_groupid
+                );
+
+                // Ejecuta la consulta
+            $group_member = $DB->get_record_sql($sql, $params);
+
+            // Agregar depuración
+           /* if ($group_member) {
+                $text.=  "User is in group 001";
+            } else {
+                $text .= "User is not in group 001.<br>";
+                
+            }*/
+
+                // Si el usuario pertenece al grupo, no mostrar el bloque
+            if ($group_member) {
+                $text = 'es miembro del grupo con id 001';
+                return null;
+                }
+
+
+        }else {
+            $text = 'NO entro al inf..';
+        }
+
+
+
+        
 
         // Obtener la marca de tiempo de la última modificación del archivo script1.js
         //$script1_version = filemtime(__DIR__ . '/scripts1.js');
         //$PAGE->requires->js('/blocks/actions_recommender/scripts1.js?v=' . $script1_version);
 
         // Ejecuta la función para obtener y guardar los registros del sistema en un archivo CSV una vez al día o la primera vez
-        $resultado=$this->execute_log_query_once_per_day_or_first_time();
+        ######$aresultado=$this->execute_log_query_once_per_day_or_first_time();
 
                 // Ejecuta la función para obtener y guardar los registros del sistema en un archivo CSV una vez al día o la primera vez
-       /* if ($resultado==1) {
+       /* if ($aresultado==1) {
             // Si la función se ejecuta correctamente, imprime un mensaje de éxito
             $text .= "Logs guardados en el archivo: " . $CFG->dataroot . '/logs_courseid_2.csv' . "<br>";
-        } else  if ($resultado==-1){
+        } else  if ($aresultado==-1){
             // Si la función no se ejecuta correctamente, imprime un mensaje de error
             $text .= "Error al guardar los logs en el archivo CSV.<br>";
-        } else  if ($resultado==0){
+        } else  if ($aresultado==0){
             // Si ya se actualizo el fichero en el día, no se vuelve a ejecutar la consulta a los logs de moodle
             $text .= "No se actualizaron los logs en el archivo CSV.<br>";
         } */
 
+        // ID del rol de estudiante. Hay que modificar el codigo para que tambien tenga en cuenta a que grupo de control pertenece el estudiante, ya que cada grupo de control tiene acceso a recursos o modulos distintos...
+        $roleid = 5;
+        
+        $aResultado2=$this->queryDBAndSendLogs($user_id, $roleid);
 
-
-/*
-        //Obtener el ultimo modulo visto por el usuario autenticado
-        $last_completed_module=$DB->get_records_sql("
-            SELECT coursemoduleid from {course_modules_completion}
-            WHERE userid= :userid
-            ORDER BY timemodified DESC
-            LIMIT 1
-        ", ['userid' => $user_id]); */
+        //Depuración
+        /*if ($aResultado2==True) {
+            // Si la función se ejecuta correctamente, imprime un mensaje de éxito
+            $text .= "Logs guardados correctamente en el archivo: " . $CFG->dataroot . '/logs_courseid_2.csv' . "<br>";
+        } else  if ($aResultado2==False){
+            // Si la función no se ejecuta correctamente o no existen nuevos registros de otros usuarios en la BD
+            $text .= "No se han guardado nuevos logs en el archivo CSV del servidor de Moode.<br>";
+        } */
 
 
 
@@ -453,22 +810,7 @@ class block_actions_recommender extends block_base {
             WHERE cm.id IN (" . implode(',', $recommended_list) . ")
             ");
 
-            // Construct the content text with the last completed module of the actual user
-            /*foreach ($recommended_modules as $resource) {
-                
-                $course_module = get_coursemodule_from_id($resource->modulename, $resource->id, 0, false, MUST_EXIST);
-                $course = $DB->get_record('course', array('id' => $course_module->course));
-                $resource_name = format_string($course_module->name);
-                //$course_shortname = format_string($course->shortname);
-                $resource_link = new moodle_url('/mod/' . $resource->modulename . '/view.php', array('id' => $course_module->id));            
-                //$mytext .= '- <a href="' . $resource_link . '">' . $resource_name . '</a> (' . $course_shortname . ') <br>';
-                $mytext .= '- <a href="' . $resource_link . '">' . $resource_name . '</a> <br>';
-                // Construir el enlace con el icono y el nombre formateado
-                //$mytext .= '- ' . $module_icon . ' <a href="' . $resource_link . '">' . $formatted_resource_name . '</a> <br>';
-                // Obtener el icono del módulo
-                //$module_icon = $OUTPUT->pix_icon('icon', $course_module, $course_module, ['class' => 'activityicon']);
-            }*/
-
+ 
 
             // Construct the content text with the last completed module of the actual user
             foreach ($recommended_modules as $resource) {
@@ -484,62 +826,6 @@ class block_actions_recommender extends block_base {
                 $mytext .=  $module_icon . ' <a href="' . $resource_link . '">' . $resource_name . '</a> <br>';
             }
 
-
-            /*
-
-            // Recuperar un objeto de tipo lo que recupera la consulta a la BD
-            $recommended_modules = $DB->get_records_list('course_modules', 'id', $recommended_list);
-            $recommended_modules_ordered = [];
-
-            // Reorganizar los resultados para que coincidan con el orden de la lista $recommended_list
-            foreach ($recommended_list as $id) {
-                if (isset($recommended_modules[$id])) {
-                    $recommended_modules_ordered[] = $recommended_modules[$id];
-                }
-            }
-
-            // Construct the content text with the last completed module of the actual user
-          // Construct the content text with the last completed module of the actual user
-            foreach ($recommended_modules_ordered as $resource) {
-                // Consulta SQL para obtener el nombre y el tipo del módulo
-                $sql = "SELECT cm.id, cm.module, m.name AS modulename
-                        FROM {course_modules} cm
-                        JOIN {modules} m ON cm.module = m.id
-                        WHERE cm.id = :cm_id";
-                
-                // Parámetros de la consulta SQL
-                $params = array('cm_id' => $resource->id);
-
-                // Ejecutar la consulta SQL
-                $module_info = $DB->get_record_sql($sql, $params);
-
-                if ($module_info) {
-                    $module_name = $module_info->modulename;
-
-                    // Obtener el módulo del curso a partir de su ID
-                    $course_module = get_coursemodule_from_id($module_name, $resource->id, 0, false, MUST_EXIST);
-
-                    // Obtener el curso al que pertenece el módulo
-                    $course = $DB->get_record('course', array('id' => $course_module->course));
-
-                    // Obtener el nombre y el nombre corto del módulo y el curso
-                    $resource_name = format_string($course_module->name);
-                    $course_shortname = format_string($course->shortname);
-
-                    // Construir la URL con el tipo correcto del módulo
-                    $resource_link = new moodle_url('/mod/' . $module_name . '/view.php', array('id' => $course_module->id));
-
-                    // Agregar el enlace al texto final
-                    $mytext .= '- <a href="' . $resource_link . '">' . $resource_name . '</a> (' . $course_shortname . ') <br>';
-                } else {
-                    // Si no se encuentra información del módulo, mostrar un mensaje de error
-                    $mytext .= '- Error al obtener información del módulo <br>';
-                }
-            }*/
-
-
-
-    
 
         
             //$mytext .= ' ENTRÓ AL IF:';
