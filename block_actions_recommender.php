@@ -58,6 +58,96 @@ class block_actions_recommender extends block_base {
     }
 
 
+    
+
+/**
+ * Obtiene el siguiente módulo en la jerarquía de un curso y lo formatea con un icono y un enlace.
+ *
+ * @param int $coursemoduleid El ID del último módulo visitado.
+ * @param int $userid El ID del usuario autenticado.
+ * @return string $mytext El contenido formateado con el enlace al siguiente módulo o un mensaje de error.
+ */
+    function getNextModuleFormatted($coursemoduleid, $userid) {
+        global $DB, $OUTPUT, $COURSE;
+
+        // Verifica si se ha pasado un ID de módulo válido
+        if (!$coursemoduleid) {
+            return 'No se ha proporcionado un ID válido de módulo.';
+        }
+
+        // Obtén el ID del curso actual
+        $courseid = $COURSE->id;
+
+        // Definir las columnas que queremos obtener
+        $columns = array('id', 'module', 'instance', 'visible', 'deletioninprogress');
+
+        // Prefijar cada columna con cmnext.
+        $columns_prefixed = array_map(function($col) {
+            return "cmnext." . $col;
+        }, $columns);
+
+        // Consulta SQL para obtener los módulos siguientes en la jerarquía
+        $sql = "
+            SELECT " . implode(', ', $columns_prefixed) . "
+            FROM {course_modules} cm
+            JOIN {course_sections} cs ON cm.section = cs.id
+            JOIN {course_modules} cmnext ON FIND_IN_SET(cmnext.id, cs.sequence)
+            WHERE cm.id = :coursemoduleid
+            AND cmnext.course = :courseid
+            AND cmnext.id > cm.id
+            AND cmnext.deletioninprogress = 0 
+            
+        ";
+
+        // Parámetros de la consulta
+        $params = [
+            'coursemoduleid' => $coursemoduleid,
+            'userid' => $userid,
+            'courseid' => $courseid,
+        ];
+
+        // Ejecuta la consulta para obtener todos los módulos
+        $next_modules = $DB->get_records_sql($sql, $params);
+
+        // Si no se encuentran módulos, devolver un mensaje de error
+        if (!$next_modules) {
+            return 'No se encontró un módulo siguiente o no tienes permisos para verlo.';
+        }
+
+        // Iterar sobre los módulos hasta encontrar uno visible y no en proceso de eliminación
+        foreach ($next_modules as $next_module) {
+            // Filtrar módulos que están ocultos o en proceso de eliminación
+            if ($next_module->deletioninprogress == 0 && $next_module->visible == 1) {
+                // Obtener el nombre del tipo de módulo desde la tabla 'modules'
+                $module = $DB->get_record('modules', array('id' => $next_module->module), '*', MUST_EXIST);
+
+                // Obtiene el nombre del curso-módulo usando el tipo de módulo
+                $course_module = get_coursemodule_from_id($module->name, $next_module->id, 0, false, MUST_EXIST);
+
+                // Formatear el nombre del recurso
+                $resource_name = format_string($course_module->name);
+
+                // Crear el enlace basado en el nombre del tipo de módulo y el ID del módulo
+                $resource_link = new moodle_url('/mod/' . $module->name . '/view.php', array('id' => $course_module->id));
+
+                // Obtener el icono del módulo
+                $module_icon = $OUTPUT->pix_icon('icon', '', $module->name, ['class' => 'activityicon']);
+
+                // Construir el enlace con el icono y el nombre formateado
+                $mytext = $module_icon . ' <a href="' . $resource_link . '">' . $resource_name . '</a> <br>';
+
+                // Devolver el contenido formateado
+                return $mytext;
+            }
+        }
+
+        // Si no se encontró ningún módulo visible y no eliminado, devolver un mensaje de error.
+        return 'No se encontró un módulo visible y no en proceso de eliminación.';
+    }
+
+
+
+
     /**
      * Ejecuta una consulta para obtener registros del sistema y guarda los resultados en un archivo CSV.
      * Se ejecuta solo una vez al día o si el archivo CSV no existe.
@@ -794,7 +884,14 @@ class block_actions_recommender extends block_base {
             //$PAGE->requires->js_init_call('fetchRecommendations');
 
             if ($recommended_list==[]){
-                $mytext = 'No se encontraron módulos recomendados.';
+                $mytext = 'There is not enough data for the Recommend algorithm. Please visit the next course item: ';
+
+                //Esto puede pasar cuando no hay suficiente información para el pathrecomender, entonces simplemente se recomienda el item (módulo) siguiente de la jerarquía el curso en Moodle
+                //Recomendar módulo siguiente en el curso
+
+                $mytext.= $this->getNextModuleFormatted($coursemoduleid,$user_id);
+
+
                 $this->content->text = $mytext;
                 return $this->content;
 
