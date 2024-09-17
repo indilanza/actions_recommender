@@ -72,7 +72,7 @@ class block_actions_recommender extends block_base {
 
         // Verifica si se ha pasado un ID de módulo válido
         if (!$coursemoduleid) {
-            return 'No se ha proporcionado un ID válido de módulo.';
+            return 'A valid module ID has not been provided.';
         }
 
         // Obtén el ID del curso actual
@@ -857,7 +857,7 @@ class block_actions_recommender extends block_base {
           // $mytext .= "\$last_viewed_module = " . $coursemoduleid . ";  <br>";
         } else {
             // Manejar el caso en que no se encuentren resultados
-            $mytext .= " No se encontraron módulos completados por el usuario.";
+            $mytext .= " No modules completed by the user were found.";
         }    
 
 
@@ -866,13 +866,7 @@ class block_actions_recommender extends block_base {
             //la recomendacion en base al id del modulo 
             
             /***LLAMAR AL SERVICIO WEB DE RECOMENDACIONES***/
-            //$recommended_list=$this->recommended_list($coursemoduleid);
-
-
-            // recommended_list es una lista de ids de course modules
-            //$recommended_list = [3, 4]; // modificar esta línea y agregar el servicio del recomendador en base al último elemento visitado last_completed_module
-            //$recommended_list = $this->generate_unique_random_numbers(3, 23, 3);
-
+        
             //$coursemoduleid=4;
             $recommended_list = $this->recommended_list($coursemoduleid);
             //var_dump($recommended_list); // Depuración
@@ -923,11 +917,10 @@ class block_actions_recommender extends block_base {
                 $mytext .=  $module_icon . ' <a href="' . $resource_link . '">' . $resource_name . '</a> <br>';
             }
 
-
         
-            //$mytext .= ' ENTRÓ AL IF:';
+            
         } else {
-            $mytext = 'No se encontraron módulos recomendados.';
+            $mytext = 'No resources found to recommend.';
         }
         
         
@@ -940,7 +933,7 @@ class block_actions_recommender extends block_base {
             $this->content->text = $text;
         } else {
             // Provide a default text if no resources viewed.
-            $text = 'No se han visto recursos recientemente.';
+            $text = 'No resources have been viewed recently.';
             $this->content->text = $text;
         }
 
